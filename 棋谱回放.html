@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>五子棋擂台棋谱</title>
+<style>
+  :root { color-scheme: light; font: 16px "Microsoft YaHei", system-ui, sans-serif; color: #201d17; background: #f5f1e8; }
+  * { box-sizing: border-box; }
+  body { margin: 0; }
+  main { max-width: 850px; margin: 0 auto; padding: 32px 20px; }
+  h1 { margin: 0 0 16px; font-size: 24px; }
+  label { display: block; margin: 0 0 12px; }
+  input, select, button { font: inherit; }
+  select { width: 100%; padding: 8px; }
+  canvas { display: block; width: 100%; max-width: 640px; margin: 16px auto; border: 1px solid #ad8a55; border-radius: 8px; }
+  nav { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  button { border: 1px solid #a69880; background: #fffaf0; color: inherit; padding: 6px 12px; border-radius: 5px; cursor: pointer; }
+  button:disabled { opacity: 0.45; cursor: default; }
+  input[type=range] { flex: 1 1 140px; accent-color: #71442d; }
+  p { min-height: 1.5em; line-height: 1.5; }
+</style>
+<main>
+  <h1>五子棋擂台棋谱</h1>
+  <label>打开擂台棋谱 <input id="file" type="file" accept=".jsonl"></label>
+  <select id="games" aria-label="对局" disabled><option>选择 results 文件夹里的 JSONL 棋谱</option></select>
+  <canvas id="board" width="640" height="640" aria-label="15×15 五子棋棋盘"></canvas>
+  <nav aria-label="回放控制">
+    <button id="first" disabled>开局</button>
+    <button id="prev" disabled>上一手</button>
+    <input id="position" type="range" min="0" max="0" value="0" aria-label="手数" disabled>
+    <button id="next" disabled>下一手</button>
+    <button id="last" disabled>终局</button>
+  </nav>
+  <p id="status" aria-live="polite"></p>
+</main>
+<script>
+  const get = id => document.getElementById(id);
+  const ctx = get('board').getContext('2d');
+  const colors = ['#181817', '#fffdf4'];
+  const pad = 34;
+  const step = (640 - 2 * pad) / 14;
+  const labels = 'ABCDEFGHJKLMNOP';
+  const names = { vct: 'VCT', hybrid: '双脑混合版', katagomo: 'Katagomo 40Block' };
+  const outcomes = { win: '胜', loss: '负', draw: '和' };
+  let games = [];
+  let game;
+  let ply = 0;
+
+  function render() {
+    ctx.fillStyle = '#e7bb7e';
+    ctx.fillRect(0, 0, 640, 640);
+    ctx.strokeStyle = '#795331';
+    ctx.fillStyle = '#654225';
+    ctx.font = '13px system-ui';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    for (let i = 0; i < 15; i++) {
+      const x = pad + i * step;
+      ctx.beginPath();
+      ctx.moveTo(x, pad);
+      ctx.lineTo(x, 640 - pad);
+      ctx.moveTo(pad, x);
+      ctx.lineTo(640 - pad, x);
+      ctx.stroke();
+      ctx.fillText(labels[i], x, 15);
+      ctx.fillText(15 - i, 16, x);
+    }
+    const dots = [[3, 3], [3, 11], [7, 7], [11, 3], [11, 11]];
+    for (const [r, c] of dots) {
+      ctx.beginPath();
+      ctx.arc(pad + c * step, pad + r * step, 3.2, 0, 2 * Math.PI);
+      ctx.fill();
+    }
+    if (!game) return;
+    for (const [i, move] of game.moves.slice(0, ply).entries()) {
+      const x = pad + move.c * step;
+      const y = pad + move.r * step;
+      ctx.beginPath();
+      ctx.arc(x, y, step * 0.43, 0, 2 * Math.PI);
+      ctx.fillStyle = colors[move.p - 1];
+      ctx.fill();
+      ctx.fillStyle = i === ply - 1 ? '#dc532f' : colors[2 - move.p];
+      ctx.fillText(i + 1, x, y);
+    }
+    const move = game.moves[ply - 1];
+    get('status').textContent = [
+      `${ply} / ${game.moves.length} 手`,
+      move && `${move.p === 1 ? '黑' : '白'} ${move.coord}`,
+      move && (move.ms == null ? '指定开局' : `${move.ms} ms`),
+      ply === game.moves.length && `新引擎${outcomes[game.result]}（${{ five: '五连', timeout: '超时', resigned: '认输', 'full-board': '满盘', 'engine-error': '引擎错误', 'illegal-move': '非法落子' }[game.reason] ?? game.reason}）`,
+    ].filter(Boolean).join(' · ');
+    get('position').value = ply;
+    get('prev').disabled = get('first').disabled = ply === 0;
+    get('next').disabled = get('last').disabled = ply === game.moves.length;
+  }
+
+  function go(number) {
+    if (!game) return;
+    ply = Math.max(0, Math.min(number, game.moves.length));
+    render();
+  }
+
+  function selectGame() {
+    game = games[Number(get('games').value)];
+    get('position').max = game.moves.length;
+    get('position').disabled = false;
+    go(game.moves.length);
+  }
+
+  get('file').onchange = async event => {
+    const file = event.target.files[0];
+    if (!file) return;
+    try {
+      const rows = (await file.text()).split(/\r?\n/).filter(Boolean).map(JSON.parse);
+      if (!rows.length || rows.some(row => !Array.isArray(row.moves)
+          || !row.moves.every(m => [m.r, m.c].every(n => Number.isInteger(n) && n >= 0 && n < 15)
+            && (m.p === 1 || m.p === 2)))) {
+        throw new Error();
+      }
+      games = rows;
+      get('games').replaceChildren(...games.map((row, index) => new Option(
+        `第 ${index + 1} 局 · ${names[row.opponent] ?? row.opponent} · 新引擎执${row.candidateColor === 1 ? '黑' : '白'} · ${outcomes[row.result]}`,
+        index,
+      )));
+      get('games').disabled = false;
+      selectGame();
+    } catch {
+      get('status').textContent = '无法读取这份棋谱，请选择擂台生成的 JSONL 文件。';
+    }
+  };
+  get('games').onchange = selectGame;
+  get('position').oninput = event => go(Number(event.target.value));
+  get('first').onclick = () => go(0);
+  get('prev').onclick = () => go(ply - 1);
+  get('next').onclick = () => go(ply + 1);
+  get('last').onclick = () => go(game.moves.length);
+  addEventListener('keydown', event => {
+    if (!game || event.target.matches('input, select, button')) return;
+    if (event.key === 'ArrowLeft') go(ply - 1);
+    if (event.key === 'ArrowRight') go(ply + 1);
+  });
+  render();
+</script>
+</html>
